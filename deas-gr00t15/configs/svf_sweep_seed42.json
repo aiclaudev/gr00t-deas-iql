@@ -1,0 +1,31 @@
+{
+  "training_config": "configs/svf_joint_seed42_staged.json",
+  "kappas": [
+    0.4,
+    0.6,
+    0.8,
+    1.0
+  ],
+  "gs": [
+    0.25,
+    0.5,
+    0.8
+  ],
+  "train_time": null,
+  "evaluation": {
+    "tasks": [
+      "CoffeeSetupMug",
+      "PnPMicrowaveToCounter",
+      "TurnOffStove",
+      "PnPCounterToMicrowave"
+    ],
+    "episodes": null,
+    "time": null,
+    "eval_seed": 42,
+    "n_envs": 1,
+    "action_horizon": 16,
+    "denoising_steps": 4,
+    "save_video": false,
+    "report_to": "wandb"
+  }
+}

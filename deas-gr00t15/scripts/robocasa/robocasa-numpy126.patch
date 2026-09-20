@@ -1,0 +1,23 @@
+diff --git a/robocasa/__init__.py b/robocasa/__init__.py
+index 225446c..806f37e 100644
+--- a/robocasa/__init__.py
++++ b/robocasa/__init__.py
+@@ -310,7 +310,17 @@ assert (
+ 
+ import numpy
+ 
+-assert numpy.__version__ in [
++# DEAS preprocessing requires NumPy >=1.24. Opt in only in its tested environment.
++import os as _os
++import warnings as _warnings
++
++_deas_numpy_compat = (
++    numpy.__version__ == "1.26.4"
++    and _os.environ.get("ROBOCASA_ALLOW_NUMPY_126") == "1"
++)
++if _deas_numpy_compat:
++    _warnings.warn("Using DEAS NumPy 1.26.4 compatibility mode", RuntimeWarning)
++assert _deas_numpy_compat or numpy.__version__ in [
+     "1.23.2",
+     "1.23.3",
+     "1.23.5",

@@ -1,0 +1,11 @@
+**/__pycache__/
+**/.venv*/
+**/output/
+**/outputs/
+**/wandb/
+**/.env
+*.pt
+*.pth
+*.safetensors
+*.mp4
+*.npz
