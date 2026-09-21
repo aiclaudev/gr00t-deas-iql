@@ -208,7 +208,10 @@ def run(config: Config):
     # Create output directory
     if config.training.experiment_name is None:
         output_dir = Path(config.training.output_dir)
-        experiment_name = output_dir.name
+        # Respect the submitted run label without changing checkpoint placement.
+        experiment_name = os.environ.get("WANDB_NAME") or (
+            output_dir.parent.name if output_dir.name == "checkpoints" else output_dir.name
+        )
     else:
         output_dir = Path(config.training.output_dir) / config.training.experiment_name
         experiment_name = config.training.experiment_name

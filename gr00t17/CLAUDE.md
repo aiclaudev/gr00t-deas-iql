@@ -77,3 +77,12 @@ getting_started/    # User-facing guides and notebooks
 - **DGX Spark:** CUDA 13.0 — install via `scripts/deployment/spark/install_deps.sh`, container via `scripts/deployment/spark/Dockerfile`
 
 Each Jetson/Spark platform ships an `activate_*.sh` helper (`scripts/activate_orin.sh`, `scripts/activate_spark.sh`, `scripts/activate_thor.sh`) that exports platform-specific library paths. For dGPU, the standard `source .venv/bin/activate` is sufficient.
+
+## Shared Git publication
+
+Publish local research source changes through `../gr00t-deas-iql`, which combines
+GR00T 1.5 and 1.7. After edits, run
+`python ../gr00t-deas-iql/tools/sync_workspace.py --apply`, review the combined
+Git diff and commit there. Push when authorized. This workspace remains the
+runtime/editable-install source; do not independently edit its mirrored copy.
+Never copy weights, data, tokens, or running output snapshots into Git.

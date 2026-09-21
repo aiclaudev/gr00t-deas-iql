@@ -485,7 +485,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--num_samples",
         type=int,
-        default=4,
+        default=10,
         help="Number of samples for BoN sampling.",
     )
     parser.add_argument(

@@ -52,3 +52,17 @@ This repository packages working-tree snapshots, including local research change
 - [GR00T N1.7 license](gr00t17/LICENSE)
 
 The component licenses govern their respective files; this repository does not replace them with a blanket license. Public source availability does not include model or dataset redistribution rights.
+
+## Maintaining both versions
+
+The sibling development workspaces are synchronized into this repository with
+`python tools/sync_workspace.py --apply` (omit `--apply` to preview changes).
+Review and commit the resulting changes here. Runtime environments and running
+jobs remain in their existing locations. This is an explicit sync workflow,
+not a background synchronizer; source deletions require manual review.
+
+Latest additions include policy-TD SVF from BC2 with DiT LoRA, shared Monte Carlo
+samples for temperature and soft-value targets, SDE early termination once all
+paths reach t=1, configurable training microbatch size, critic episode caching,
+and the N1.7 W&B run-name fix. The policy-TD trainer is
+`deas-gr00t15/scripts/train_policy_td_svf.py`.

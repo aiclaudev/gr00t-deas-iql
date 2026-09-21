@@ -70,3 +70,22 @@ def test_runner_accepts_stream_without_length(monkeypatch, tmp_path):
     runner = SimpleNamespace(exp_cfg_dir=tmp_path)
     result = module.TrainRunner.create_trainer(runner, None, SimpleNamespace(run_name='test'), Stream(), None, None)
     assert isinstance(result, Trainer)
+
+
+def test_accelerate_preserves_three_camera_rows():
+    import torch
+    from torch.utils.data import IterableDataset, DataLoader
+    from accelerate.data_loader import prepare_data_loader
+    class Stream(IterableDataset):
+        def __iter__(self):
+            for _ in range(4):
+                yield {"state": torch.zeros(1), "pixels": torch.arange(3).reshape(3, 1)}
+    def collate(items):
+        return {"state": torch.stack([x["state"] for x in items]),
+                "pixels": torch.cat([x["pixels"] for x in items])}
+    loader = DataLoader(Stream(), batch_size=2, collate_fn=collate)
+    loader = prepare_data_loader(loader, device=torch.device("cpu"), num_processes=1,
+                                 process_index=0, put_on_device=True, dispatch_batches=False)
+    for batch in loader:
+        assert batch["pixels"].shape[0] == 3 * batch["state"].shape[0]
+        assert batch["pixels"].flatten().tolist() == [0, 1, 2, 0, 1, 2]

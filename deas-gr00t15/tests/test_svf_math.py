@@ -67,6 +67,22 @@ class SVFMathTests(unittest.TestCase):
         self.assertFalse(seen[0][2])
         self.assertTrue((actual[..., 1] > 1).all())
 
+    def test_reference_stops_at_terminal_time(self):
+        config = SVFConfig(K=2, flow_steps=10)
+        x = torch.zeros(2, 1, 1)
+        calls = []
+        def velocity(latent, time):
+            calls.append(time.clone())
+            return torch.ones_like(latent)
+        reference_endpoints(velocity, x, torch.tensor([.85, .95]),
+                            torch.ones_like(x), config)
+        self.assertEqual(len(calls), 2)
+        calls.clear()
+        result = reference_endpoints(velocity, x, torch.ones(2),
+                                     torch.ones_like(x), config)
+        self.assertEqual(len(calls), 0)
+        torch.testing.assert_close(result, x.unsqueeze(0).expand(2, -1, -1, -1))
+
     def test_guidance_direction_schedule_padding_and_no_parameter_grad(self):
         weight = nn.Parameter(torch.tensor(2.0))
         x = torch.tensor([[[1., 100.]], [[2., 200.]]], requires_grad=True)
@@ -139,9 +155,13 @@ class SVFMathTests(unittest.TestCase):
         self.assertIsNone(q_weight.grad)
         self.assertIsNone(features.grad)
         self.assertIsNone(states.grad)
-        self.assertEqual(len(q_inputs), 2)
-        self.assertFalse(torch.equal(q_inputs[0], q_inputs[1]))
-        self.assertEqual(len(reference_calls), 2 * config.flow_steps)
+        self.assertEqual(len(q_inputs), 1)
+        qs = q_weight.detach() * (q_inputs[0] * mask).sum(dim=(-1, -2))
+        expected_lambda = estimate_lambda(qs, config)
+        torch.testing.assert_close(metrics["lambda"], expected_lambda)
+        torch.testing.assert_close(metrics["value_target_mean"],
+                                   soft_value_target(qs, expected_lambda).mean())
+        self.assertLessEqual(len(reference_calls), config.flow_steps)
         self.assertTrue(all(shape[0] == batch * config.K and not grad for shape, grad in reference_calls))
         self.assertTrue(all((value[..., -1] == 0).all() for value in value_inputs))
         self.assertTrue(all(not value.requires_grad for value in metrics.values()))

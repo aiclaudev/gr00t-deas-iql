@@ -18,7 +18,8 @@ from gr00t.data.dataset import LeRobotMixtureDataset, LeRobotSingleDataset
 class _CachedEpisode(LeRobotSingleDataset):
     def get_video(self, trajectory_id, modality, key, base_index):
         indices = np.clip(self.delta_indices[key] + base_index, 0, len(self.curr_traj_data) - 1)
-        return self.frames[key][indices]
+        cache_key = "video." + key.split(".", 1)[1]
+        return self.frames[cache_key][indices]
 
 
 def cache_episode(source, episode_id, byte_limit):
@@ -33,7 +34,12 @@ def cache_episode(source, episode_id, byte_limit):
     cached.frames = {}
     timestamps = cached.curr_traj_data['timestamp'].to_numpy()
     used = 0
-    for key in source.modality_keys['video']:
+    video_keys = list(dict.fromkeys(
+        "video." + key.split(".", 1)[1]
+        for modality in ("video", "next_video")
+        for key in source.modality_keys.get(modality, [])
+    ))
+    for key in video_keys:
         path = source.get_video_path(episode_id, key.split('.', 1)[1])
         reader = decord.VideoReader(str(path), num_threads=1)
         frame_times = reader.get_frame_timestamp(range(len(reader)))[:, :1]
@@ -57,7 +63,7 @@ def cache_episode(source, episode_id, byte_limit):
 
 class BCShardDataset(IterableDataset):
     def __init__(self, source, seed=42, episodes_per_shard=4,
-                 samples_per_episode=256, max_shard_gib=4):
+                 samples_per_episode=256, max_shard_gib=4, allow_rl=False):
         super().__init__()
         if int(os.environ.get('WORLD_SIZE', '1')) != 1:
             raise ValueError('BC shard loader currently supports single-GPU training only')
@@ -77,7 +83,7 @@ class BCShardDataset(IterableDataset):
             self.weights = np.array([1.])
             lengths = np.asarray(source.trajectory_lengths, dtype=float)
             self.episode_weights = [lengths / lengths.sum()]
-        if any(d.use_rl for d in self.datasets):
+        if not allow_rl and any(d.use_rl for d in self.datasets):
             raise ValueError('BC shard loader cannot be used for RL datasets')
         if any(d.video_backend != 'decord' for d in self.datasets):
             raise ValueError('BC shard loader preserves Decord frame semantics; use video_backend=decord')
@@ -115,3 +121,11 @@ class BCShardDataset(IterableDataset):
                     episode = episodes[episode_index]
                     yield episode.transforms(episode.get_step_data(episode.curr_traj_id, step))
                 del episode, episodes, positions
+
+
+class CriticShardDataset(BCShardDataset):
+    """Cache current/next RGB together; retain the original RL sample and transforms."""
+    def __init__(self, source, **kwargs):
+        super().__init__(source, allow_rl=True, **kwargs)
+        if not all(d.use_rl for d in self.datasets):
+            raise ValueError("Critic shard loader requires RL datasets")

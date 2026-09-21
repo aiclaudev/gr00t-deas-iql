@@ -117,6 +117,11 @@ class ArgsConfig:
     lora_full_model: bool = False
     """Whether to use the full model for LORA. If False, only the action head will be trained."""
 
+    critic_loader: Literal["random", "shard"] = "random"
+    shard_episodes: int = 4
+    shard_samples_per_episode: int = 256
+    shard_max_gib: float = 4.0
+
     dataloader_num_workers: int = 8
     """Number of workers for data loading."""
 
@@ -279,6 +284,16 @@ def main(config: ArgsConfig):
         )
         print(f"Loaded {len(single_datasets)} datasets, with {config.dataset_path} ")
 
+    if config.critic_loader == "shard":
+        if config.num_gpus != 1:
+            raise ValueError("Critic shard loader requires num_gpus=1")
+        from gr00t.data.bc_shard_dataset import CriticShardDataset
+        train_dataset = CriticShardDataset(
+            train_dataset, seed=config.seed, episodes_per_shard=config.shard_episodes,
+            samples_per_episode=config.shard_samples_per_episode,
+            max_shard_gib=config.shard_max_gib,
+        )
+
     # 1-3. critic config and rl config
     critic_config = dict(
         hidden_dim=config.critic_hidden_dim,
@@ -343,6 +358,7 @@ def main(config: ArgsConfig):
         tf32=True,
         per_device_train_batch_size=config.batch_size,
         gradient_accumulation_steps=1,
+        accelerator_config={"dispatch_batches": False},
         dataloader_num_workers=config.dataloader_num_workers,
         dataloader_pin_memory=False,
         dataloader_persistent_workers=config.dataloader_num_workers > 0,

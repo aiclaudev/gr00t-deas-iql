@@ -68,6 +68,9 @@ def reference_endpoints(velocity_fn: Callable, x_t, t, action_mask,
     x = x.reshape(config.K * batch, horizon, dim)
     s = _batch_time(t, x_t).repeat(config.K)
     for _ in range(config.flow_steps):
+        # Keep the full conditioning batch, but stop once every path is done.
+        if bool((s >= 1.0).all()):
+            break
         ds = (1.0 - s).clamp(min=0.0, max=1.0 / config.flow_steps)
         safe_s = s.clamp_min(config.t_min)
         velocity = velocity_fn(x, s).float()
@@ -84,7 +87,7 @@ def reference_endpoints(velocity_fn: Callable, x_t, t, action_mask,
 
 
 def estimate_lambda(qs, config: SVFConfig, valid=None):
-    """Independent MC Q draws determine one detached temperature per update."""
+    """MC Q draws determine one detached temperature per update."""
     if qs.ndim != 2 or qs.shape[0] < 2:
         raise ValueError("qs must have shape [K>=2,B]")
     spread = qs.detach().float().std(dim=0, correction=0)
@@ -164,8 +167,8 @@ def joint_losses(soft_value, velocity_fn, reference_velocity_fn, teacher_score,
                  generator=None):
     """Joint V regression and actor regression against frozen BC/Q teachers.
 
-    The lambda estimator and V target use independent noise, times and SDE
-    paths. Actor anchors are independent and cover [0,1), including pure BC
+    The lambda estimator and V target share the same SDE endpoints and Q
+    draws. Actor anchors are independent and cover [0,1), including pure BC
     targets below t_min. Conditioning passed to V is always detached.
     """
     actions = actions.detach().float()
@@ -182,19 +185,13 @@ def joint_losses(soft_value, velocity_fn, reference_velocity_fn, teacher_score,
         return x, t, actions - noise
 
     with torch.no_grad():
-        lambda_x, lambda_t, _ = anchor(config.t_min)
-        lambda_ends = reference_endpoints(reference_velocity_fn, lambda_x, lambda_t,
-                                         mask, config, generator)
-        lambda_qs = teacher_score(lambda_ends).detach().float()
-        if lambda_qs.shape != (config.K, batch):
-            raise ValueError("teacher_score must return [K,B]")
-        lam = estimate_lambda(lambda_qs, config, valid)
         value_x, value_t, _ = anchor(config.t_min)
         ends = reference_endpoints(reference_velocity_fn, value_x, value_t,
                                    mask, config, generator)
         qs = teacher_score(ends).detach().float()
         if qs.shape != (config.K, batch):
             raise ValueError("teacher_score must return [K,B]")
+        lam = estimate_lambda(qs, config, valid)
         target = soft_value_target(qs, lam)
     value_loss_type = getattr(soft_value, "loss_type", "mse")
     if value_loss_type == "hl-gauss":
@@ -244,7 +241,7 @@ def joint_losses(soft_value, velocity_fn, reference_velocity_fn, teacher_score,
         "total_loss": loss.detach(), "soft_value_loss": value_loss.detach(),
         "actor_loss": actor_loss.detach(), "lambda": lam,
         "q_spread": qs.std(dim=0, correction=0).mean().detach(),
-        "lambda_q_spread": lambda_qs.std(dim=0, correction=0).mean().detach(),
+        "lambda_q_spread": qs.std(dim=0, correction=0).mean().detach(),
         "weight_max": (qs / lam).softmax(dim=0).amax(dim=0).mean().detach(),
         "value_target_mean": target.mean().detach(),
         "value_prediction_mean": predicted_values.mean().detach(),

@@ -194,7 +194,7 @@ def main():
     p.add_argument('--eval-seeds', type=common.nonnegative, nargs='+', default=[0, 1, 2])
     p.add_argument('--tasks', choices=common.TASKS, nargs='+', default=list(common.TASKS))
     p.add_argument('--episodes', type=common.positive, default=50)
-    p.add_argument('--num-samples', type=common.positive, default=50)
+    p.add_argument('--num-samples', type=common.positive, default=10)
     p.add_argument('--bc-time', required=True)
     p.add_argument('--bon-time', required=True)
     p.add_argument('--report-to', choices=('wandb', 'none'), default='none')

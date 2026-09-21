@@ -298,6 +298,9 @@ def main(config: ArgsConfig):
         tf32=True,
         per_device_train_batch_size=config.batch_size,
         gradient_accumulation_steps=1,
+        # Eagle batches have B text rows but 3*B camera rows. Iterable batch
+        # dispatch slices every tensor to B, dropping two cameras per sample.
+        accelerator_config={"dispatch_batches": False},
         dataloader_num_workers=config.dataloader_num_workers,
         dataloader_pin_memory=False,
         dataloader_persistent_workers=config.dataloader_num_workers > 0,

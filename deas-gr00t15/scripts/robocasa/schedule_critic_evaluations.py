@@ -15,6 +15,7 @@ VARIANTS = (
     ('lr3e4-featurefix', '138941', '20260919T160821Z-critic-lr3e4-featurefix-seed42', 1),
 )
 ACTOR_RELATIVE = 'output/deas-training/20260918T183345.797990880Z/02-bc-rollout'
+DEFAULT_NUM_SAMPLES = 10
 
 
 def make_plan(output_root, variant):
@@ -35,7 +36,7 @@ def make_plan(output_root, variant):
     snapshot = root / 'source-snapshot/repo'
     jobs=[]
     for task in common.TASKS:
-        key=f'{label}-eval0-{task}-bon50'
+        key=f'{label}-eval0-{task}-bon{DEFAULT_NUM_SAMPLES}'
         output=root/'results/eval-seed-0'/task
         command=['sbatch','--parsable','--account=sub','--qos=own','--partition=compute',
             '--nodes=1','--ntasks=1','--gres=gpu:1','--cpus-per-gpu=8','--mem=96G',
@@ -43,14 +44,14 @@ def make_plan(output_root, variant):
             '--kill-on-invalid-dep=yes',f'--job-name=rc-{label}',f'--chdir={repo}',
             f'--comment={group}:{task}',f'--output={root}/logs/{key}-%j.out',f'--error={root}/logs/{key}-%j.err',
             str(snapshot/'slurm/robocasa_after_critic_eval.sbatch'),str(actor),str(training/'03-critic'),
-            task,str(output),'50','0',group,str(snapshot),'16','50','wandb',str(passes)]
+            task,str(output),'50','0',group,str(snapshot),'16',str(DEFAULT_NUM_SAMPLES),'wandb',str(passes)]
         jobs.append(dict(key=key,training_seed=42,eval_seed=0,task=task,method='deas',actor=str(actor),
             critic=str(training/'03-critic'),expected_episodes=50,output_dir=str(output),
             result_path=str(output/'result.json'),job_id=None,command=command,
             dependency=None,submission_state='planned'))
     return dict(schema_version=1,status='planned',created_at_utc=dt.datetime.now(dt.timezone.utc).isoformat(),
         output_root=str(root),source_snapshot=str(snapshot),training_job_id=jid,variant=label,
-        config=dict(n_envs=1,action_horizon=16,execute_horizon=16,denoising_steps=4,num_samples=50,
+        config=dict(n_envs=1,action_horizon=16,execute_horizon=16,denoising_steps=4,num_samples=DEFAULT_NUM_SAMPLES,
             temperature=0.0,deas_backend='checkpoint',critic_feature_passes=passes,terminate_on_success=True,
             save_video=True,save_inference_inputs=True,report_to='wandb',training_seed=42,eval_seeds=[0],
             episodes=50,tasks=list(common.TASKS),qos='own',account='sub',gpus_per_job=1,cpus_per_gpu=8,
