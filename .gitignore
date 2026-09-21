@@ -9,3 +9,5 @@
 *.safetensors
 *.mp4
 *.npz
+# Local run outputs: evaluation results, checkpoints, collected datasets.
+local_outputs/

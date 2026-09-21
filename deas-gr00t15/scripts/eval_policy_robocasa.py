@@ -226,7 +226,7 @@ def evaluation_protocol(args):
         feature_passes = checkpoint_config["critic_cfg"].get("online_q_feature_passes", 2)
         if type(feature_passes) is not int or feature_passes not in (1, 2):
             raise ValueError("online_q_feature_passes must be 1 or 2")
-    if args.critic_model_path and args.deas_backend == "iql":
+    if args.critic_model_path and args.deas_backend in ("iql", "svf"):
         feature_passes = 1
     return {
         "environment": args.env_name,
@@ -278,6 +278,9 @@ def run_evaluation(args, recorder):
             if args.deas_backend == "iql":
                 from gr00t.model.iql_bon_policy import CheckpointIQLBoNPolicy
                 policy_class = CheckpointIQLBoNPolicy
+            if args.deas_backend == "svf":
+                from gr00t.model.svf_bon_policy import CheckpointSVFBoNPolicy
+                policy_class = CheckpointSVFBoNPolicy
             policy = policy_class(
                 actor_model_path=args.actor_model_path,
                 critic_model_path=args.critic_model_path,
@@ -288,6 +291,8 @@ def run_evaluation(args, recorder):
                 num_samples=args.num_samples,
                 temperature=args.temperature,
                 device="cuda" if torch.cuda.is_available() else "cpu",
+                **({"reference_actor_path": args.critic_reference_actor}
+                   if args.deas_backend == "svf" else {}),
             )
     elif args.actor_model_path is not None:
         import torch
@@ -435,8 +440,14 @@ def run_evaluation(args, recorder):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--deas_backend", choices=["legacy", "checkpoint", "iql"], default="legacy",
-                        help="checkpoint keeps actor/critic features and normalization separate")
+    parser.add_argument("--deas_backend", choices=["legacy", "checkpoint", "iql", "svf"], default="legacy",
+                        help="checkpoint keeps actor/critic features and normalization separate; "
+                             "svf scores with a published policy-TD SVF export")
+    parser.add_argument("--critic_reference_actor", type=str, default=None,
+                        help="For --deas_backend svf: the checkpoint the SVF run started from "
+                             "(BC2). Its frozen backbone, reference head and "
+                             "experiment_cfg/metadata.json define the critic's feature and "
+                             "normalization path.")
     parser.add_argument("--host", type=str, default="localhost", help="host")
     parser.add_argument("--port", type=int, default=5555, help="port")
     parser.add_argument("--n_envs", type=int, default=1, help="number of environments")
@@ -617,6 +628,10 @@ if __name__ == "__main__":
         parser.error("execute_horizon must be between 1 and action_horizon")
     if args.critic_model_path and (not args.actor_model_path or args.model_type != "deas"):
         parser.error("critic_model_path requires actor_model_path and model_type=deas")
+    if args.deas_backend == "svf" and not args.critic_reference_actor:
+        parser.error("--deas_backend svf requires --critic_reference_actor")
+    if args.critic_reference_actor and args.deas_backend != "svf":
+        parser.error("--critic_reference_actor only applies to --deas_backend svf")
     if (args.save_video or args.save_inference_inputs) and not args.output_path:
         parser.error("video/input recording requires output_path")
     if args.denoising_steps < 1 or args.num_samples < 1:
