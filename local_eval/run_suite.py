@@ -91,6 +91,7 @@ def arguments(argv=None):
                         help="Record observations, RNG state and Q values for replay and rendering")
     parser.add_argument("--report-to", choices=("none", "wandb"), default="none")
     parser.add_argument("--wandb-group", default=None)
+    parser.add_argument("--python-executable", default=None, help="Use this interpreter directly instead of conda run")
     parser.add_argument("--conda-env", default=os.environ.get("DEAS_CONDA_ENV", "deas-rc"))
     parser.add_argument("--skip-completed", action="store_true",
                         help="Leave already-completed job directories alone and reuse their results")
@@ -187,9 +188,9 @@ def build_plan(args, actor, critic):
         for task in args.tasks:
             key = f"seed-{args.training_seed}-eval-{eval_seed}-{task}-{method}"
             output_dir = root / "results" / f"seed-{args.training_seed}" / f"eval-{eval_seed}" / task
-            command = [
-                "conda", "run", "--no-capture-output", "-n", args.conda_env,
-                "python", str(EVAL_SCRIPT),
+            launcher = ([args.python_executable] if args.python_executable else
+                        ["conda", "run", "--no-capture-output", "-n", args.conda_env, "python"])
+            command = launcher + [str(EVAL_SCRIPT),
                 "--actor_model_path", str(actor),
                 "--model_type", method,
                 "--env_name", task,
@@ -323,7 +324,14 @@ def main(argv=None):
     critic = None
     if args.critic:
         critic = resolve_checkpoint(args.critic, label="critic")
-        check_checkpoint(critic, label="critic")
+        if args.deas_backend == "svf":
+            for name in ("config.json", "q_projection.safetensors"):
+                if not (critic / name).is_file():
+                    raise SystemExit(f"SVF critic is missing {name}: {critic}")
+            args.critic_reference_actor = resolve_checkpoint(args.critic_reference_actor, label="reference actor")
+            check_checkpoint(args.critic_reference_actor, label="reference actor")
+        else:
+            check_checkpoint(critic, label="critic")
 
     plan = build_plan(args, actor, critic)
 

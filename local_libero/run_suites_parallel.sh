@@ -58,7 +58,7 @@ for SUITE in ${SUITES}; do
     PIDS+=($!)
     echo "  ${SUITE} -> pid $! (${LOG})"
     # Stagger the starts so four checkpoint loads do not collide on disk and GPU.
-    sleep 20
+    sleep "${SUITE_START_DELAY:-20}"
 done
 
 STATUS=0
@@ -74,3 +74,5 @@ python "${LOCAL_LIBERO_DIR}/run_suite_gr00t17.py" \
     --summarise-only 2>&1 | tail -20
 
 echo "finished $(date -Is) (status ${STATUS})"
+
+exit "$STATUS"

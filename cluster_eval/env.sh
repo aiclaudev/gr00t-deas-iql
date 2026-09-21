@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+CLUSTER_EVAL_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+export REPO_ROOT="$CLUSTER_EVAL_ROOT"
+EVAL_WORKSPACE="$(dirname -- "$REPO_ROOT")"
+EVAL_USER_ROOT="$(dirname -- "$EVAL_WORKSPACE")"
+EVAL_NAS_ROOT="$(dirname -- "$EVAL_USER_ROOT")"
+export DEAS_ROOT="$REPO_ROOT/deas-gr00t15"
+export DEAS_PYTHON="${DEAS_PYTHON:-$EVAL_WORKSPACE/DEAS-Isaac-GR00T/.venv-robocasa/bin/python}"
+export GR00T17_ROOT="$REPO_ROOT/gr00t17"
+export LIBERO_VENV="${LIBERO_VENV:-$EVAL_WORKSPACE/eval_envs/libero17}"
+export LIBERO_CONFIG_PATH="$LIBERO_VENV/libero_config"
+export LIBERO_REPO="${LIBERO_REPO:-$EVAL_WORKSPACE/Isaac-GR00T/external_dependencies/LIBERO}"
+export ROBOSUITE_DIR="$EVAL_WORKSPACE/bench/robosuite"
+export ROBOCASA_DIR="$EVAL_WORKSPACE/bench/robocasa"
+export LD_LIBRARY_PATH="${EVAL_GL_LIB:-$EVAL_USER_ROOT/miniconda3/envs/groot-train/lib}${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+export HF_HOME="${HF_HOME:-$EVAL_NAS_ROOT/.cache/huggingface}"
+export HF_HUB_CACHE="$HF_HOME/hub" TRANSFORMERS_CACHE="$HF_HOME/hub"
+export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 NUMBA_NUM_THREADS=1
+export USE_TF=0 NO_ALBUMENTATIONS_UPDATE=1 TOKENIZERS_PARALLELISM=false
+export MUJOCO_GL=egl PYOPENGL_PLATFORM=egl MUJOCO_EGL_DEVICE_ID=0
+export NUMBA_CACHE_DIR="${TMPDIR:-/tmp}/gr00t-eval-numba-${SLURM_JOB_ID:-$USER}"
+export WANDB_ENTITY=RwHlabs WANDB_PROJECT=fmrl-gr00t-robocasa WANDB_LOG_MODEL=false
+mkdir -p "$NUMBA_CACHE_DIR"

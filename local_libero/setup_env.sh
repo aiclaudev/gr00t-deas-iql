@@ -24,7 +24,9 @@ command -v uv >/dev/null || { echo "uv is required (https://docs.astral.sh/uv/)"
 
 echo "==> Creating ${VENV} (python ${PYTHON_VERSION})"
 mkdir -p "${VENV}"
-uv venv "${VENV}/.venv" --python "${PYTHON_VERSION}"
+if [[ ! -x "${VENV}/.venv/bin/python" ]]; then
+    uv venv "${VENV}/.venv" --python "${PYTHON_VERSION}"
+fi
 # shellcheck source=/dev/null
 source "${VENV}/.venv/bin/activate"
 
@@ -37,6 +39,8 @@ import os
 from pathlib import Path
 
 replacements = {
+    "torch": "torch==2.9.0",
+    "torchvision": "torchvision==0.24.0",
     "hydra-core": "hydra-core==1.3.2",
     "numpy": "numpy==1.26.4",
     "transformers": "transformers==4.57.3",
@@ -53,11 +57,13 @@ for raw in source.read_text().splitlines():
         continue
     name = stripped.split("==", 1)[0].strip().lower()
     lines.append(replacements.get(name, raw))
+lines += ["torch==2.9.0", "torchvision==0.24.0"]
 Path(os.environ["PATCHED"]).write_text("\n".join(lines) + "\n")
 PY
 
 echo "==> Installing LIBERO and its dependencies"
-uv pip install --requirements "${PATCHED}"
+uv pip install "cmake<4" setuptools wheel
+uv pip install --no-build-isolation-package egl-probe --requirements "${PATCHED}"
 uv pip install -e "${LIBERO_REPO}" --config-settings editable_mode=compat
 
 # gr00t17's runtime stack. Explicit pins stop the resolver backtracking
@@ -129,6 +135,10 @@ print(f"numpy {numpy.__version__}  torch {torch.__version__}  "
       f"robosuite {robosuite.__version__}  mujoco {mujoco.__version__}  "
       f"gymnasium {gym.__version__}")
 
+import os
+if os.environ.get("VERIFY_RENDER", "1") == "0":
+    print("Renderer check deferred to an allocated worker")
+    raise SystemExit(0)
 env = gym.make(tasks[0])
 observation, info = env.reset(seed=0)
 print(f"reset ok: {tasks[0]}")
