@@ -278,9 +278,53 @@ own suite, each would write a `summary.json` covering only that suite; the
 launcher finishes with `run_suite_gr00t17.py --summarise-only`, which rebuilds a
 combined summary without loading a policy.
 
-### RoboCasa: do not copy the LIBERO settings
+### RoboCasa: observations must go through shared memory
 
-This is the trap. Four RoboCasa tasks at `n_envs=16` **exhausted an 80 GB A100**:
+`load_robocasa_gym_env` builds its `AsyncVectorEnv` with `shared_memory=False`,
+so every observation is pickled through a worker's pipe. RoboCasa returns three
+256x256x3 camera views per step, about **590 KB per environment**, far more
+than a unix socket send buffer holds. When several environments reset on the
+same vector step, their workers all block in the kernel mid-send and the run
+wedges permanently.
+
+It presents as a hang, not as slowness. Cumulative CPU time stops moving
+entirely; workers sit in `sock_alloc_send_pskb` and the parent in
+`unix_stream_data_wait`; GPU utilisation drops to zero. Confirm it by sampling
+`ps -o times=` twice 30 seconds apart — if the total does not change, it is
+wedged, and no amount of waiting will help.
+
+**Lowering `n_envs` does not fix it, it only moves the stall.** Measured on
+`CoffeeSetupMug`:
+
+| `n_envs` | Stalled at | Which is |
+| ---: | --- | --- |
+| 8 | call 13, 208 steps | the moment the first environment finished |
+| 4 | call 37, 592 steps | the remaining ones hitting the 600-step horizon together |
+
+Pass `--shared_memory` (and it is the default in `local_eval/run_suite.py`;
+`--pipe-observations` restores the old path). Observations then move through
+shared buffers and the pipes carry only control messages. The configuration
+that previously wedged runs to completion, passing the step where all four
+environments reset at once.
+
+Two checks were run before trusting it, because a silent change to observations
+would be far worse than a hang:
+
+- Driving the same seed and the same actions through both paths, states match
+  exactly and images differ by at most 1 of 255 on a handful of pixels — EGL
+  rendering nondeterminism between two runs, not corruption.
+- `n_envs=1` uses `SyncVectorEnv` and has no IPC at all. Its outcome for a
+  given seed matches what shared memory produces, so the observation path is
+  not changing results.
+
+That second check is worth repeating whenever a result looks surprising: this
+policy is stochastic and the simulator is chaotic, so the same seed and scene
+can end differently between runs. One run's success is not evidence that a
+configuration change caused a later failure.
+
+### RoboCasa: do not copy the LIBERO settings either
+
+Four RoboCasa tasks at `n_envs=16` **exhausted an 80 GB A100**:
 
 ```
 CUDA OOM: 88 MiB free of 79.25 GiB
@@ -297,6 +341,10 @@ Memory also grows late: environment creation is lazy, so the first reading looks
 comfortable (37 GB) and then climbs as environments reset.
 
 Measure the peak of a single task before choosing `--jobs-per-gpu`. Start at 1.
+
+Measured for reference: one task at `n_envs=8` with a policy and a separate
+critic model peaked at 46.7 GiB; the same task after the critic learned to
+borrow the actor's feature path sits far lower.
 
 ### GPU memory, roughly
 

@@ -67,6 +67,11 @@ def arguments(argv=None):
     parser.add_argument("--episodes", type=positive, default=50)
     parser.add_argument("--n-envs", type=positive, default=8,
                         help="RoboCasa simulators run in parallel inside each job")
+    parser.add_argument("--pipe-observations", action="store_true",
+                        help="Send observations through worker pipes instead of shared memory. "
+                             "RoboCasa's three camera views overflow a socket send buffer and "
+                             "the run wedges when several environments reset together, so "
+                             "shared memory is the default here.")
     parser.add_argument("--gpus", nargs="+", type=nonnegative, default=[0],
                         help="GPU indices jobs are distributed over")
     parser.add_argument("--jobs-per-gpu", type=positive, default=1)
@@ -163,6 +168,7 @@ def build_plan(args, actor, critic):
     config = {
         "episodes": args.episodes,
         "n_envs": args.n_envs,
+        "shared_memory": not args.pipe_observations,
         "action_horizon": args.action_horizon,
         "execute_horizon": execute_horizon,
         "denoising_steps": args.denoising_steps,
@@ -196,6 +202,7 @@ def build_plan(args, actor, critic):
                 "--env_name", task,
                 "--num_episodes", str(args.episodes),
                 "--n_envs", str(args.n_envs),
+                *([] if args.pipe_observations else ["--shared_memory"]),
                 "--seed", str(eval_seed),
                 "--training_seed", str(args.training_seed),
                 "--data_config", args.data_config,
