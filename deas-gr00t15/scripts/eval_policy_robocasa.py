@@ -346,6 +346,7 @@ def run_evaluation(args, recorder):
     env = load_robocasa_gym_env(
         args.env_name,
         n_envs=args.n_envs,
+        shared_memory=args.shared_memory,
         seed=args.seed,
         # robosuite-related configs
         robots=args.robots,
@@ -451,6 +452,11 @@ if __name__ == "__main__":
     parser.add_argument("--host", type=str, default="localhost", help="host")
     parser.add_argument("--port", type=int, default=5555, help="port")
     parser.add_argument("--n_envs", type=int, default=1, help="number of environments")
+    parser.add_argument("--shared_memory", action="store_true",
+                        help="Pass observations to the vector env through shared buffers "
+                             "instead of worker pipes. RoboCasa's three camera views are far "
+                             "larger than a socket send buffer, and with pipes a run can wedge "
+                             "when several environments reset together.")
     parser.add_argument(
         "--data_config",
         type=str,

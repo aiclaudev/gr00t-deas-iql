@@ -26,7 +26,18 @@ def get_env_horizon(env_name):
     return ds_config["horizon"]
 
 
-def load_robocasa_gym_env(env_name, n_envs=1, **kwargs):
+def load_robocasa_gym_env(env_name, n_envs=1, shared_memory=False, **kwargs):
+    """Build the vector env.
+
+    ``shared_memory`` moves observations into shared buffers instead of pickling
+    them through each worker's pipe. RoboCasa returns three 256x256x3 camera
+    views per step, roughly 590 KB per environment, which is far larger than a
+    unix socket's send buffer. With pipes, workers block in the kernel mid-send
+    and the run can wedge: observed here as every process sitting at zero CPU
+    with some workers in sock_alloc_send_pskb and the parent in
+    unix_stream_data_wait, reproducibly at the step where several environments
+    hit the task horizon and reset together.
+    """
     if n_envs < 1:
         raise ValueError("n_envs must be positive")
     env_fns = []
@@ -42,7 +53,7 @@ def load_robocasa_gym_env(env_name, n_envs=1, **kwargs):
     else:
         return gym.vector.AsyncVectorEnv(
             env_fns,
-            shared_memory=False,
+            shared_memory=shared_memory,
             context="spawn",
         )
 
