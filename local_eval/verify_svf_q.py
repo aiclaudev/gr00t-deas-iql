@@ -94,10 +94,13 @@ def deployment_q(reference_actor, export, batch, horizon):
     features = scorer.project(pooled, batch["embodiment_id"])
     states = batch["state"].float() * batch["state_mask"].float()
     actions = batch["action"].float() * batch["action_mask"].float()
-    scores = scorer.score(features, states, actions[:, :horizon])
+    # bfloat16 reproduces the training arithmetic, which is what the reference
+    # path computes; float32 is what ranking actually uses.
+    scores = scorer.score(features, states, actions[:, :horizon], dtype=torch.bfloat16)
+    exact = scorer.score(features, states, actions[:, :horizon])
     del scorer
     torch.cuda.empty_cache()
-    return pooled.float(), features.float(), scores
+    return pooled.float(), features.float(), scores, exact
 
 
 def report(name, a, b, tolerance):
@@ -143,8 +146,14 @@ def main():
     print(f"  Q min {ref_q.min().item():.4f}  mean {ref_q.mean().item():.4f}  max {ref_q.max().item():.4f}")
 
     print("\ndeployment (SVFCriticScorer)")
-    dep_pooled, dep_features, dep_q = deployment_q(args.reference_actor, export, batch, horizon)
-    print(f"  Q min {dep_q.min().item():.4f}  mean {dep_q.mean().item():.4f}  max {dep_q.max().item():.4f}")
+    dep_pooled, dep_features, dep_q, dep_exact = deployment_q(
+        args.reference_actor, export, batch, horizon)
+    print(f"  Q (bfloat16) min {dep_q.min().item():.4f}  mean {dep_q.mean().item():.4f}"
+          f"  max {dep_q.max().item():.4f}  distinct {dep_q.unique().numel()}")
+    print(f"  Q (float32)  min {dep_exact.min().item():.4f}  mean {dep_exact.mean().item():.4f}"
+          f"  max {dep_exact.max().item():.4f}  distinct {dep_exact.unique().numel()}")
+    print("  float32 is what ranking uses; bfloat16 is compared below because the "
+          "reference path computes in it.")
 
     print("\ncomparison")
     results = [

@@ -47,34 +47,110 @@ from gr00t.model.policy import (
 
 ALGORITHM_PREFIX = "policy-TD SVF"
 
+# The only modules the critic reads from the reference checkpoint.
+FEATURE_PATH_PREFIXES = ("backbone.", "action_head.vlln.", "action_head.vl_self_attention.")
+
+
+def _weight_index(path):
+    index = Path(path) / "model.safetensors.index.json"
+    if index.is_file():
+        return json.loads(index.read_text())["weight_map"]
+    single = Path(path) / "model.safetensors"
+    if not single.is_file():
+        raise FileNotFoundError(f"No safetensors weights under {path}")
+    from safetensors import safe_open
+
+    with safe_open(str(single), framework="pt") as handle:
+        return {key: "model.safetensors" for key in handle.keys()}
+
+
+def feature_path_is_shared(actor_path, reference_path):
+    """True when the actor already holds the reference checkpoint's feature path.
+
+    An SVF run freezes the backbone and adapts the DiT, so the tuned actor
+    usually carries byte-identical backbone / VLLN / VL self-attention weights.
+    When that holds there is no reason to load the reference checkpoint at all:
+    the critic can read features straight off the actor already in memory, which
+    halves the resident model memory.
+
+    It is not guaranteed — a run that also tuned the projector would diverge —
+    so this compares every tensor on the feature path rather than assuming.
+    """
+    from safetensors import safe_open
+
+    actor_index, reference_index = _weight_index(actor_path), _weight_index(reference_path)
+    keys = sorted(k for k in reference_index if k.startswith(FEATURE_PATH_PREFIXES))
+    if not keys or any(k not in actor_index for k in keys):
+        return False, 0
+    handles = {}
+    try:
+        def tensor(root, index, key):
+            shard = str(Path(root) / index[key])
+            if shard not in handles:
+                handles[shard] = safe_open(shard, framework="pt")
+            return handles[shard].get_tensor(key)
+
+        for key in keys:
+            if not torch.equal(tensor(actor_path, actor_index, key),
+                               tensor(reference_path, reference_index, key)):
+                return False, len(keys)
+    finally:
+        for handle in handles.values():
+            handle.__exit__(None, None, None)
+    return True, len(keys)
+
 
 class SVFCriticScorer(torch.nn.Module):
     """Frozen BC2 feature path plus the exported projection and double Q."""
 
-    def __init__(self, reference_actor_path, horizon=16, device="cuda:0"):
+    def __init__(self, reference_actor_path=None, horizon=16, device="cuda:0",
+                 borrow_from=None):
+        """Build the scorer, either from a reference checkpoint or from a loaded model.
+
+        ``borrow_from`` is a GR00T_N1_5 whose feature path has been verified
+        identical to the reference checkpoint's; passing it avoids loading a
+        second copy of a multi-billion parameter model.
+        """
         super().__init__()
         from gr00t.model.action_head.deas_critic import CategorySpecificMLP
         from gr00t.model.critic.networks import DoubleCritic
-        from gr00t.model.gr00t_n1 import GR00T_N1_5
 
-        actor = GR00T_N1_5.from_pretrained(
-            str(reference_actor_path), torch_dtype=torch.bfloat16,
-            tune_visual=False, tune_llm=False,
-        )
+        if borrow_from is None:
+            from gr00t.model.gr00t_n1 import GR00T_N1_5
+
+            if reference_actor_path is None:
+                raise ValueError("Give either reference_actor_path or borrow_from")
+            source = GR00T_N1_5.from_pretrained(
+                str(reference_actor_path), torch_dtype=torch.bfloat16,
+                tune_visual=False, tune_llm=False,
+            )
+            owned = True
+        else:
+            source = borrow_from
+            owned = False
+
         # PolicyTDSVF keeps the backbone frozen in bfloat16 and takes its
         # reference head as a deepcopy of the same checkpoint's action head.
-        self.backbone = actor.backbone.requires_grad_(False).eval()
-        self.vlln = actor.action_head.vlln.requires_grad_(False).eval()
-        self.vl_self_attention = actor.action_head.vl_self_attention.requires_grad_(False).eval()
-        width = actor.action_head.config.backbone_embedding_dim
-        self.state_dim = actor.action_head.config.max_state_dim
-        self.action_dim = actor.action_dim
+        self.backbone = source.backbone.requires_grad_(False).eval()
+        self.vlln = source.action_head.vlln.requires_grad_(False).eval()
+        self.vl_self_attention = source.action_head.vl_self_attention.requires_grad_(False).eval()
+        width = source.action_head.config.backbone_embedding_dim
+        self.state_dim = source.action_head.config.max_state_dim
+        self.action_dim = source.action_dim
         self.horizon = horizon
-        del actor
+        self.borrowed = not owned
+        if owned:
+            del source
 
         self.projection = CategorySpecificMLP(32, width, 1024, 64)
         self.q = DoubleCritic(64 + self.state_dim + horizon * self.action_dim, [512] * 4, output_dim=1)
-        self.to(device).eval().requires_grad_(False)
+        if self.borrowed:
+            # Only the new heads need moving; the borrowed modules are already placed.
+            self.projection.to(device)
+            self.q.to(device)
+            self.eval().requires_grad_(False)
+        else:
+            self.to(device).eval().requires_grad_(False)
 
     def load_export(self, path):
         weights = load_file(str(path))
@@ -101,9 +177,25 @@ class SVFCriticScorer(torch.nn.Module):
         return projected.float().tanh()
 
     @torch.no_grad()
-    def score(self, embedded, states, actions):
-        with torch.autocast("cuda", dtype=torch.bfloat16):
-            q1, q2 = self.q(embedded, states, actions)
+    def score(self, embedded, states, actions, dtype=torch.float32):
+        """Rank candidates in float32.
+
+        Training runs this head under bfloat16 autocast, which is fine when the
+        output feeds a loss. It is not fine for ranking: around Q = -98 the gap
+        between adjacent bfloat16 values is 0.5, so every candidate whose Q
+        falls inside the same bucket reads back as one number and best-of-N
+        degenerates into picking whichever index argmax happens to return.
+        That is exactly what was observed — 1120 scores, one distinct value.
+
+        The weights are unchanged; float32 only stops the comparison from being
+        quantised away. Pass dtype=torch.bfloat16 to reproduce the training
+        arithmetic bit for bit, which is what verify_svf_q.py does.
+        """
+        if dtype == torch.float32:
+            q1, q2 = self.q(embedded.float(), states.float(), actions.float())
+        else:
+            with torch.autocast("cuda", dtype=dtype):
+                q1, q2 = self.q(embedded, states, actions)
         return torch.minimum(q1.float(), q2.float())
 
 
@@ -132,12 +224,23 @@ class CheckpointSVFBoNPolicy:
             )
         reference_actor_path = Path(reference_actor_path)
 
-        self.critic = SVFCriticScorer(reference_actor_path, horizon=horizon, device=device)
-        counts = self.critic.load_export(critic_path / "q_projection.safetensors")
-
         self.actor = Gr00tPolicy(actor_model_path, embodiment_tag, modality_config,
                                  modality_transform, denoising_steps, device)
         self.actor.model.requires_grad_(False)
+
+        # An SVF run freezes the backbone and adapts the DiT, so the tuned actor
+        # usually already carries the reference checkpoint's feature path. When
+        # every tensor on that path matches, read features off the actor instead
+        # of loading a second multi-billion parameter model.
+        shared, checked = feature_path_is_shared(actor_model_path, reference_actor_path)
+        if shared:
+            self.critic = SVFCriticScorer(horizon=horizon, device=device,
+                                          borrow_from=self.actor.model)
+            source = f"borrowed from the actor ({checked} feature tensors verified identical)"
+        else:
+            self.critic = SVFCriticScorer(reference_actor_path, horizon=horizon, device=device)
+            source = f"loaded from {reference_actor_path} (feature path differs from the actor)"
+        counts = self.critic.load_export(critic_path / "q_projection.safetensors")
 
         # Normalization follows the reference checkpoint, matching what
         # train_policy_td_svf.py passes to ChunkEpisodeStream.
@@ -159,9 +262,9 @@ class CheckpointSVFBoNPolicy:
         self.temperature = temperature
         self.last_scores = None
         self.last_candidates = None
-        print(f"policy-TD SVF BoN N={num_samples}; reference features from "
-              f"{reference_actor_path}; loaded {counts[0]} projection and {counts[1]} Q tensors; "
-              f"min(Q1,Q2)", flush=True)
+        mode = "no selection (N=1)" if num_samples == 1 else f"BoN N={num_samples}, min(Q1,Q2)"
+        print(f"policy-TD SVF {mode}; critic features {source}; "
+              f"loaded {counts[0]} projection and {counts[1]} Q tensors", flush=True)
 
     def get_modality_config(self):
         return self.actor.get_modality_config()
