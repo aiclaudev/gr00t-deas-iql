@@ -2,14 +2,14 @@
   "deas-gr00t15": {
     "source_commit": "1bfc8464c4d28574cbd2e699342791c7e4d80028",
     "snapshot": "working tree including local modifications",
-    "synced_utc": "2026-09-21T08:54:14.166331+00:00",
-    "source_files": 219,
-    "source_digest_sha256": "0e0283c4d252088f5832b1366d7b31cbd334d8b8ea8da63abc54171fe6d20c0a"
+    "synced_utc": "2026-09-21T13:02:31.592083+00:00",
+    "source_files": 220,
+    "source_digest_sha256": "3b77279affd9cc6925b1667700a7e044d2ccaa132625999ed81291e10de72742"
   },
   "gr00t17": {
     "source_commit": "51d4c89f72fda44cbf77285c6a8114b52676b8a1",
     "snapshot": "working tree including local modifications",
-    "synced_utc": "2026-09-21T08:54:15.713885+00:00",
+    "synced_utc": "2026-09-21T13:02:33.308709+00:00",
     "source_files": 266,
     "source_digest_sha256": "5895635bde1f889256b06540213b534a9da4342d28fae924429b96b7d3824342"
   }

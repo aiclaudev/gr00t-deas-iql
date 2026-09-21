@@ -88,6 +88,10 @@ class InferenceTraceRecorder:
     def finish(self, pending, policy, predicted_actions, supplied_actions, executed_steps):
         metadata, arrays = pending
         metadata['executed_steps'] = [int(value) for value in executed_steps]
+        head = getattr(getattr(policy, 'model', None), 'action_head', None)
+        initial_noise = getattr(head, 'last_initial_noise', None)
+        if initial_noise is not None:
+            arrays['initial_noise'] = array_copy(initial_noise)
         arrays.update({'output::' + key: array_copy(value) for key, value in predicted_actions.items()})
         arrays.update({'supplied::' + key: array_copy(value) for key, value in supplied_actions.items()})
         for key, value in (getattr(policy, 'last_candidates', None) or {}).items():

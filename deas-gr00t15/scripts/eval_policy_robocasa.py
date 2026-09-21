@@ -318,6 +318,8 @@ def run_evaluation(args, recorder):
     if args.save_inference_inputs:
         from gr00t.eval.inference_trace import InferenceTraceRecorder
         trace_recorder = InferenceTraceRecorder(Path(args.output_path) / "inference", vars(args))
+        if not args.critic_model_path and hasattr(policy, "model"):
+            policy.model.action_head.capture_initial_noise = True
 
     # Get the supported modalities for the policy
     modality = policy.get_modality_config()
