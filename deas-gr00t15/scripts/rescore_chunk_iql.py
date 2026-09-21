@@ -19,6 +19,7 @@ def main():
     p.add_argument('--source-root', type=Path, required=True)
     p.add_argument('--output', type=Path, required=True)
     p.add_argument('--seed', type=int, default=42)
+    p.add_argument('--inspect-encoder', action='store_true', help='Save all 64 pre/post-tanh values for each sampled state')
     p.add_argument('--points', type=int, default=16)
     p.add_argument('--batch-size', type=int, default=8)
     p.add_argument('--max-episodes-inspected', type=int, default=128)
@@ -50,7 +51,8 @@ def main():
     metadata = json.loads(normalization)['new_embodiment']
     horizon, discount = cfg['horizon'], cfg['discount']
     print('LOAD_MODEL', str(args.checkpoint), flush=True)
-    model = ChunkIQLCritic(cfg['actor'], horizon=horizon)
+    model = ChunkIQLCritic(cfg['actor'], horizon=cfg['horizon'],
+            **({'critic_encoder': cfg['critic_encoder']} if 'critic_encoder' in cfg else {}))
     payload = torch.load(args.checkpoint / 'training.pt', map_location='cpu',
                          weights_only=False, mmap=True)
     step = payload['step']
@@ -61,6 +63,14 @@ def main():
     assert not unexpected and all(k.startswith('head.') for k in missing), (missing, unexpected)
     del frozen
     model.to('cuda:0').eval().requires_grad_(False)
+    encoder_capture, encoder_rows = {}, []
+    encoder_handle = None
+    if args.inspect_encoder:
+        if cfg.get('critic_encoder', 'deas') != 'deas':
+            raise ValueError('Pre/post tanh inspection requires the DEAS encoder')
+        def capture_encoder(module, inputs, output):
+            encoder_capture['pre_tanh'] = output.detach().float()
+        encoder_handle = model.head.backbone_encoder.register_forward_hook(capture_encoder)
     collator = DefaultDataCollator()
     rows, selection, coverage = [], [], []
     output_file = args.output / 'scores.jsonl'
@@ -113,12 +123,19 @@ def main():
                     batch = collator(samples)
                     batch = {k: v.to('cuda:0') if torch.is_tensor(v) else v for k, v in batch.items()}
                     features = model.project(model.encode(batch), batch['embodiment_id'])
+                    if args.inspect_encoder:
+                        pre_tanh = encoder_capture.pop('pre_tanh')
+                        torch.testing.assert_close(features, torch.tanh(pre_tanh), rtol=0, atol=0)
+                        encoder_pre = pre_tanh.flatten(1).cpu().numpy()
+                        encoder_post = features.flatten(1).cpu().numpy()
+                        assert np.isfinite(encoder_pre).all() and encoder_pre.shape == encoder_post.shape
                     states = batch['state'].float() * batch['state_mask'].float()
                     actions = batch['action'].float() * batch['action_mask'].float()
                     q1, q2 = model.head.q(features, states, actions)
                     value = model.head.v(features, states)
-                    numbers = dict(q1=q1, q2=q2, q_min=torch.minimum(q1, q2), v=value,
-                                   projection_saturation=(features.abs() >= .999).float().flatten(1).mean(1))
+                    numbers = dict(q1=q1, q2=q2, q_min=torch.minimum(q1, q2), v=value)
+                    if cfg.get('critic_encoder', 'deas') == 'deas':
+                        numbers['projection_saturation'] = (features.abs() >= .999).float().flatten(1).mean(1)
                     numbers = {k: v.flatten().cpu().numpy() for k, v in numbers.items()}
                     assert all(len(v) == len(group) and np.isfinite(v).all() for v in numbers.values())
                     for i, start in enumerate(group):
@@ -129,6 +146,9 @@ def main():
                                    start=start, length=len(rewards), progress=start/max(1,len(rewards)-1),
                                    terminal=not bool(fields['bootstrap_mask']), chunk_return=fields['chunk_return'],
                                    **{k: float(v[i]) for k, v in numbers.items()})
+                        if args.inspect_encoder:
+                            encoder_rows.append({**row, 'pre_tanh': encoder_pre[i].tolist(),
+                                                 'post_tanh': encoder_post[i].tolist()})
                         rows.append(row)
                         stream.write(json.dumps(row) + '\n')
                     stream.flush()
@@ -144,6 +164,8 @@ def main():
     def stats(subset):
         result = {'n': len(subset)}
         for key in ('q1', 'q2', 'q_min', 'v', 'projection_saturation'):
+            if not subset or key not in subset[0]:
+                continue
             values = np.array([r[key] for r in subset], dtype=float)
             if len(values):
                 result[key] = dict(min=float(values.min()), mean=float(values.mean()), max=float(values.max()),
@@ -162,6 +184,31 @@ def main():
                    sampling='Outcome-stratified known training trajectories; evenly spaced complete chunks including terminal starts; eval transforms; dataset actions, no simulator.',
                    scope='These are maxima over the sampled states, not the entire dataset. This is not held-out generalization or policy success rate.',
                    selection=selection, coverage=coverage, statistics=grouped)
+    if args.inspect_encoder:
+        encoder_handle.remove()
+        pre = np.array([r['pre_tanh'] for r in encoder_rows], dtype=np.float64)
+        post = np.array([r['post_tanh'] for r in encoder_rows], dtype=np.float64)
+        def distribution(values):
+            return dict(min=float(values.min()), mean=float(values.mean()), max=float(values.max()),
+                        std=float(values.std()), abs_p50=float(np.quantile(abs(values), .5)),
+                        abs_p95=float(np.quantile(abs(values), .95)))
+        encoder_stats = dict(n=len(pre), dim=pre.shape[1], pre_tanh=distribution(pre),
+            post_tanh=distribution(post), pre_abs_ge_5=float((abs(pre)>=5).mean()),
+            post_abs_ge_0999=float((abs(post)>=.999).mean()),
+            post_exact_pm1=float((abs(post)==1).mean()),
+            local_tanh_derivative_mean=float((1-post**2).mean()),
+            local_tanh_derivative_zero_fraction=float((1-post**2==0).mean()),
+            pre_per_dimension_std=pre.std(axis=0).tolist(),
+            post_per_dimension_std=post.std(axis=0).tolist(),
+            post_constant_dimensions=int((post.std(axis=0)==0).sum()),
+            unique_post_vectors=int(len(np.unique(post,axis=0))),
+            unique_sign_vectors=int(len(np.unique(np.sign(post),axis=0))))
+        # Preserve sample identifiers alongside every value for reproducibility.
+        with (args.output / 'encoder_values.jsonl').open('w') as f:
+            for row in encoder_rows:
+                f.write(json.dumps(row)+'\n')
+        summary['encoder'] = encoder_stats
+        print('ENCODER_STATS', json.dumps(encoder_stats), flush=True)
     (args.output / 'summary.json').write_text(json.dumps(summary, indent=2) + '\n')
     print('RESCORE_COMPLETE', json.dumps(grouped['all']), flush=True)
 

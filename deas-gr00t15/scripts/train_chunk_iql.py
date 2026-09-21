@@ -28,6 +28,8 @@ def arguments():
     p.add_argument('--lr',type=float,default=3e-4)
     p.add_argument('--tau',type=float,default=.005)
     p.add_argument('--horizon',type=int,default=16)
+    p.add_argument('--critic-encoder',choices=['deas','none'],default='deas',
+                   help='deas: learned 64D tanh projection; none: frozen pooled features directly to Q/V')
     p.add_argument('--seed',type=int,default=42)
     p.add_argument('--save-steps',type=int,default=10000)
     p.add_argument('--wandb-entity',default='RwHlabs')
@@ -58,9 +60,11 @@ def main():
     torch.set_num_threads(2)
     torch.backends.cuda.matmul.allow_tf32=True
     random.seed(args.seed);np.random.seed(args.seed);torch.manual_seed(args.seed)
+    projection_policy = ('original category-specific 2048-1024-1024-1024-64 tanh projection'
+                         if args.critic_encoder == 'deas' else 'direct pooled features; no learned projection or tanh')
     config=vars(args)|{'algorithm':'scalar IQL + QC complete chunks','reward':'DEAS last15 success expansion, then reward minus1',
         'boundary_policy':'success reward is terminal; boundary-only final transition without next observation excluded',
-        'feature_policy':'BC2 frozen VLM + VLLN + VL self attention, mean2048, original category-specific 2048-1024-1024-1024-64 tanh projection; original Q512x4 GELU and V256x4 BRONet; scalar final outputs',
+        'feature_policy':f'BC2 frozen VLM + VLLN + VL self attention, mean2048, {projection_policy}; original Q512x4 GELU and V256x4 BRONet; scalar final outputs',
         'precision':'frozen feature extractor and critic projection/Q/V matmuls BF16 autocast; master weights, optimizer, tanh, TD targets and losses FP32',
         'loader':'TorchCodec CPU full-episode decode, raw current+next episode prefetch, pinned previous critic normalization; length-weighted datasets and episodes',
         'actor_training':False,'wandb_model_upload':False}
@@ -77,7 +81,7 @@ def main():
     first_batch=next(iterator)
     print('FIRST_BATCH_READY',flush=True)
     print('LOADING_BC2',args.actor,flush=True)
-    model=ChunkIQLCritic(args.actor,horizon=args.horizon).to('cuda:0').train()
+    model=ChunkIQLCritic(args.actor,horizon=args.horizon,critic_encoder=args.critic_encoder).to('cuda:0').train()
     q_params=list(model.head.critic.parameters())+list(model.head.backbone_encoder.parameters())
     v_params=list(model.head.value.parameters())
     optimizer=torch.optim.Adam(q_params+v_params,lr=args.lr)
@@ -85,19 +89,21 @@ def main():
     if not args.smoke:
         import wandb
         run=wandb.init(entity=args.wandb_entity,project=args.wandb_project,name=output.name,
-                       config=config,tags=['scalar-iql','qc-chunk16','bc2-step10000','seed42','bf16'],
+                       config=config,tags=['scalar-iql','qc-chunk16','bc2-step10000',f'seed{args.seed}','bf16',f'encoder-{args.critic_encoder}'],
                        settings=wandb.Settings(code_dir=None))
     frozen=list(model.backbone.parameters())+list(model.vlln.parameters())+list(model.vl_self_attention.parameters())
     assert not any(p.requires_grad for p in frozen)
     print('TRAIN_READY',json.dumps({'frozen_params':sum(p.numel() for p in frozen),
-        'trainable_params':sum(p.numel() for p in q_params+v_params),'feature_dim':model.feature_dim}),flush=True)
+        'trainable_params':sum(p.numel() for p in q_params+v_params),'feature_dim':model.feature_dim,'critic_feature_dim':model.critic_feature_dim,'critic_encoder':args.critic_encoder}),flush=True)
     observed_dtypes={}
     handles=[]
     if args.smoke:
         # Observe real GEMM outputs once; no per-step nonzero-gradient requirement.
-        for name,module in [('projection',model.head.backbone_encoder.layer4),
-                            ('q',model.head.critic.Q1.mlp[-1]),
-                            ('v',model.head.value.value.final_layer)]:
+        observed_modules = [('q',model.head.critic.Q1.mlp[-1]),
+                            ('v',model.head.value.value.final_layer)]
+        if args.critic_encoder == 'deas':
+            observed_modules.append(('projection',model.head.backbone_encoder.layer4))
+        for name,module in observed_modules:
             handles.append(module.register_forward_hook(
                 lambda module, inputs, out, name=name: observed_dtypes.__setitem__(name,str(out.dtype))))
     start=time.perf_counter();window=start;data_wait=0.;window_steps=0;last_batch=None
@@ -145,6 +151,12 @@ def main():
                 'data_wait_seconds_per_step':data_wait/window_steps,'elapsed_seconds':time.perf_counter()-start,
                 'peak_allocated_gib':torch.cuda.max_memory_allocated()/2**30,
                 'learning_rate':args.lr,'discount':args.discount,'expectile':args.expectile}
+            if args.critic_encoder == 'none':
+                metrics.pop('projection_grad_max_after_clip')
+            for name,values in [('q',torch.minimum(q1,q2)),('v',vs)]:
+                values=values.detach().float()
+                metrics.update({f'{name}_min':float(values.min()),f'{name}_max':float(values.max()),
+                                f'{name}_std':float(values.std(unbiased=False))})
             if args.smoke:
                 for k in ['seconds_per_step','samples_per_second','data_wait_seconds_per_step','elapsed_seconds']:
                     metrics.pop(k,None)
@@ -168,7 +180,9 @@ def main():
         last_batch=(features,states,actions)
     if args.smoke:
         assert not any(p.grad is not None for p in frozen)
-        assert observed_dtypes == {'projection':'torch.float32','q':'torch.bfloat16','v':'torch.bfloat16'}, observed_dtypes
+        expected_dtypes = {'q':'torch.bfloat16','v':'torch.bfloat16'}
+        if args.critic_encoder == 'deas': expected_dtypes['projection']='torch.float32'
+        assert observed_dtypes == expected_dtypes, observed_dtypes
         # CategorySpecificLinear adds its FP32 bias after the BF16 bmm.
         assert all(p.dtype == torch.float32 for p in q_params+v_params)
         for handle in handles: handle.remove()

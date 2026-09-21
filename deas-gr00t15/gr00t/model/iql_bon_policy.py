@@ -24,7 +24,8 @@ class CheckpointIQLBoNPolicy:
         root=path.parent
         payload=torch.load(path/'training.pt',map_location='cpu',weights_only=False)
         if payload['step']!=10000:raise ValueError('Expected requested IQL step10000')
-        self.critic=ChunkIQLCritic(cfg['actor'],horizon=cfg['horizon'])
+        self.critic=ChunkIQLCritic(cfg['actor'], horizon=cfg['horizon'],
+            **({'critic_encoder': cfg['critic_encoder']} if 'critic_encoder' in cfg else {}))
         self.critic.head.load_state_dict(payload['head'],strict=True)
         del payload
         frozen=load_file(str(root/'frozen_features.safetensors'))
