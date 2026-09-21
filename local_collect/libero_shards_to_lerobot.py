@@ -111,8 +111,16 @@ def probe_video(path: Path):
 
 def load_shards(shards_root: Path, group_by: str):
     groups = defaultdict(list)
+    selections = {}
     for meta_path in sorted(shards_root.rglob("shard.json")):
         shard = meta_path.parent
+        if shard.parent not in selections:
+            selection = shard.parent / "accepted_episodes.json"
+            selections[shard.parent] = (set(json.loads(selection.read_text()))
+                                        if selection.is_file() else None)
+        accepted = selections[shard.parent]
+        if accepted is not None and shard.name not in accepted:
+            continue
         if not (shard / "frames.parquet").is_file():
             print(f"[skip] {shard}: no frames.parquet")
             continue

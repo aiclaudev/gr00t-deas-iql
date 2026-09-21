@@ -105,8 +105,11 @@ def collect_task(policy, contract, entry, args, root):
 
     completed = 0
     successes = 0
+    accepted_shards = []
+    episode_indices = [0] * args.n_envs
     try:
-        seeds = [args.seed + i for i in range(args.n_envs)]
+        seeds = [int(np.random.SeedSequence([args.seed, i]).generate_state(1)[0])
+                 for i in range(args.n_envs)]
         observations, _ = env.reset(seed=seeds)
         policy.reset()
         live = [False] * args.n_envs
@@ -122,6 +125,8 @@ def collect_task(policy, contract, entry, args, root):
                 success = bool(np.any(final["success"])) if final and "success" in final else False
                 completed += 1
                 successes += success
+                accepted_shards.append(f"env{idx:03d}_ep{episode_indices[idx]:05d}")
+                episode_indices[idx] += 1
                 print(f"EPISODE_DONE env={idx} count={completed} success={success}", flush=True)
                 live[idx] = False
                 if completed >= args.n_episodes:
@@ -133,7 +138,12 @@ def collect_task(policy, contract, entry, args, root):
             env.close()
         except Exception as error:
             print(f"env.close() failed: {error}")
-    return {"completed": completed, "successes": successes, "shard_dir": str(shard_dir)}
+    # Keep exactly the episodes counted in SR; vector autoreset can save extras.
+    (shard_dir / "accepted_episodes.json").write_text(
+        json.dumps(accepted_shards, indent=2) + "\n")
+    return {"completed": completed, "successes": successes,
+            "success_rate": successes / completed if completed else None,
+            "env_seeds": seeds, "shard_dir": str(shard_dir)}
 
 
 def main(argv=None):
@@ -156,6 +166,16 @@ def main(argv=None):
                         help="Also keep gr00t17's own rollout videos, separate from the dataset")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
+
+    import random
+    import numpy as np
+    import torch
+
+    random.seed(args.seed)
+    np.random.seed(args.seed)
+    torch.manual_seed(args.seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(args.seed)
 
     if bool(args.model_path) == bool(args.policy_client_host):
         parser.error("Give exactly one of --model-path or --policy-client-host")
