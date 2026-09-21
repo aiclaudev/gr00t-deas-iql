@@ -37,6 +37,12 @@ the obvious routes do:
 
 ## RoboCasa
 
+MP4 writing requires `imageio-ffmpeg==0.6.0` in the collection environment
+(included by `local_eval/setup_env.sh`). Both RoboCasa converters explicitly
+select imageio's `FFMPEG` backend. Automatic selection can choose PyAV, whose
+writer rejects FFmpeg-specific options such as `pixelformat`. TorchCodec 0.7
+provides video decoding, but its encoder package only supports audio.
+
 ```bash
 ACTOR=/path/to/ckpt ENV_NAME=CoffeeSetupMug N_EPISODES=50 N_ENVS=8 \
   local_collect/collect_robocasa.sh

@@ -141,7 +141,7 @@ def write_json(path: Path, payload: dict) -> None:
 
 def write_video(path: Path, frames: np.ndarray, fps: float) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    with imageio.get_writer(path, fps=fps, codec="libx264", pixelformat="yuv420p",
+    with imageio.get_writer(path, format="FFMPEG", fps=fps, codec="libx264", pixelformat="yuv420p",
                             macro_block_size=1) as writer:
         for frame in frames:
             writer.append_data(frame)

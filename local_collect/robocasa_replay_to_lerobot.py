@@ -65,7 +65,7 @@ def open_writers(dataset_root: Path, episode_index: int, fps: float):
             episode_chunk=episode_index // DEFAULT_CHUNK_SIZE,
             video_key=f"observation.images.{key}", episode_index=episode_index)
         path.parent.mkdir(parents=True, exist_ok=True)
-        writers[key] = imageio.get_writer(path, fps=fps, codec="libx264",
+        writers[key] = imageio.get_writer(path, format="FFMPEG", fps=fps, codec="libx264",
                                           pixelformat="yuv420p", macro_block_size=1)
     return writers
 
