@@ -80,3 +80,22 @@ three-camera rendering, and for LIBERO with two environments and two steps.
 LIBERO registered 130 tasks; the N1.7 model import and the SVF direct-interpreter
 launch-plan regression also passed. Smoke now defaults to two environments.
 These checks do not measure success rate, model-Q equivalence, or throughput.
+
+## Episode-boundary hang reported on the other server
+
+The updated `PARALLEL_EVAL_SETUP.md` records RoboCasa workers blocking while
+sending large image observations through pipes when several environments reset.
+Reducing `n_envs` from 8 to 4 moved the stall; the shared-memory observation path
+completed the previously blocked run on that server.
+
+`local_eval/run_suite.py`, used by `cluster_eval/robocasa.sbatch`, now adds
+`--shared_memory` by default. Direct `eval_policy_robocasa.py` invocations must
+pass it explicitly. `--pipe-observations` opts back into the old suite path.
+This applies to RoboCasa; the LIBERO smoke uses a different observation space
+and its existing IPC setting should not be changed solely from this report.
+
+On B200, the shared-memory fix still needs a policy evaluation that crosses
+multiple episode boundaries. The earlier reset/step smoke is not evidence that
+this specific hang is fixed here. For a stuck Slurm job, inspect `sprobe <jid>
+procs`, then the relevant process environment and threads; do not attach to
+the worker. Keep the five CPU thread limits and begin with one task per GPU.
