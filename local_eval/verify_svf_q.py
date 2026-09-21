@@ -9,7 +9,7 @@ Reference path (gr00t/model/svf/policy_td.py, PolicyTDSVF.forward):
 
     raw      = actor.backbone(batch)
     context  = prepare_head_context(reference_head, raw, batch)
-    pooled   = context.backbone_features.float().mean(1, keepdim=True)
+    pooled   = context.backbone_features.mean(1, keepdim=True).float()
     features = project(pooled, embodiment_id)            # tanh
     q1, q2   = q(features, state*state_mask, action*action_mask)
 
@@ -60,7 +60,6 @@ def reference_q(reference_actor, export, batch, horizon):
 
     from gr00t.model.svf.adapters import prepare_head_context
     from gr00t.model.svf.policy_td import PolicyTDSVF
-    from gr00t.model.svf.precision import q_forward_fp32
 
     model = PolicyTDSVF(reference_actor).to("cuda").eval()
     weights = load_file(str(export))
@@ -74,12 +73,12 @@ def reference_q(reference_actor, export, batch, horizon):
     with torch.no_grad(), torch.autocast("cuda", dtype=torch.bfloat16):
         raw = model.actor.backbone(batch)
         context = prepare_head_context(model.reference_head, raw, batch)
-    pooled = context.backbone_features.float().mean(1, keepdim=True)
+    pooled = context.backbone_features.mean(1, keepdim=True).float()
     features = model.project(pooled, batch["embodiment_id"])
     states = batch["state"].float() * batch["state_mask"].float()
     actions = batch["action"].float() * batch["action_mask"].float()
-    with torch.no_grad():
-        q1, q2 = q_forward_fp32(model.q, features, states, actions[:, :horizon])
+    with torch.no_grad(), torch.autocast("cuda", dtype=torch.bfloat16):
+        q1, q2 = model.q(features, states, actions[:, :horizon])
     del model
     torch.cuda.empty_cache()
     return pooled.float(), features.float(), torch.minimum(q1.float(), q2.float())
@@ -125,7 +124,7 @@ def main():
                         help="Any LeRobot dataset the RL config can load")
     parser.add_argument("--batch-size", type=int, default=2)
     parser.add_argument("--tolerance", type=float, default=2e-2,
-                        help="Frozen features use BF16, scoring uses FP32; exact equality "
+                        help="Both paths run under bfloat16 autocast, so exact equality "
                              "is not expected; this bounds the relative gap")
     args = parser.parse_args()
 

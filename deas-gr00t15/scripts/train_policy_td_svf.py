@@ -50,9 +50,7 @@ def main():
     from gr00t.model.svf.objective import SVFConfig
     from gr00t.model.transforms import DefaultDataCollator
     from train_svf import export_actor,atomic_json
-    torch.set_num_threads(2);torch.backends.cuda.matmul.allow_tf32=False
-    torch.backends.cudnn.allow_tf32=False
-    torch.set_float32_matmul_precision("highest")
+    torch.set_num_threads(2);torch.backends.cuda.matmul.allow_tf32=True
     random.seed(args.seed);np.random.seed(args.seed);torch.manual_seed(args.seed)
     output=Path(args.output);output.mkdir(parents=True,exist_ok=args.resume is not None)
     config=vars(args).copy();config['resume']=str(args.resume) if args.resume else None
@@ -61,7 +59,7 @@ def main():
         initialization='BC2 actor and frozen reference; fresh Q/projection/soft value',
         reward='existing DEAS sparse last15 expansion minus1',horizon=16,
         soft_value_teacher='target Q with EMA projection',guidance_clip=2.0,
-        precision='BF16 backbone/actor/reference; FP32 projection/Q/soft value forward and backward, TF32 disabled, FP32 optimizer and losses',
+        precision='BF16 backbone/matmuls, FP32 trainable master weights and losses',
         resume_data_order='new episode stream on resume; not bitwise exact')
     atomic_json(output/'config.json',config)
     state=json.loads((Path(args.actor)/'trainer_state.json').read_text())

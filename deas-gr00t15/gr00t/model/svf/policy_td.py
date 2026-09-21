@@ -1,7 +1,6 @@
 """SVF with a learned double Q and policy-sampled chunk TD backup (no IQL V)."""
 from copy import deepcopy
 import torch
-from gr00t.model.svf.precision import q_forward_fp32, projection_forward_fp32
 from torch import nn
 from .adapters import prepare_head_context, velocity_from_head
 from .lora import ActorTuningConfig, apply_dit_lora
@@ -58,7 +57,8 @@ class PolicyTDSVF(nn.Module):
 
     def project(self,pooled,ids,target=False):
         layer=self.target_projection if target else self.projection
-        return projection_forward_fp32(layer,pooled,ids)
+        with torch.autocast('cuda',dtype=torch.bfloat16):out=layer(pooled,ids)
+        return out.float().tanh()
 
     @torch.no_grad()
     def sample_next(self,raw,inputs):
@@ -84,8 +84,8 @@ class PolicyTDSVF(nn.Module):
             reference=prepare_head_context(self.reference_head,raw,batch)
             next_inputs=dict(batch,state=batch['next_state'])
             next_reference=prepare_head_context(self.reference_head,nxt,next_inputs)
-            pooled=reference.backbone_features.float().mean(1,keepdim=True)
-            next_pooled=next_reference.backbone_features.float().mean(1,keepdim=True)
+            pooled=reference.backbone_features.mean(1,keepdim=True).float()
+            next_pooled=next_reference.backbone_features.mean(1,keepdim=True).float()
             next_actions=self.sample_next(nxt,next_inputs)*batch['action_mask'].float()
         states=batch['state'].float()*batch['state_mask'].float()
         next_states=batch['next_state'].float()*batch['next_state_mask'].float()
@@ -94,8 +94,9 @@ class PolicyTDSVF(nn.Module):
         with torch.no_grad():
             target_features=self.project(pooled,batch['embodiment_id'],True)
             next_features=self.project(next_pooled,batch['embodiment_id'],True)
-            tq1,tq2=q_forward_fp32(self.target_q,next_features,next_states,next_actions)
-        q1,q2=q_forward_fp32(self.q,features,states,actions)
+            with torch.autocast('cuda',dtype=torch.bfloat16):
+                tq1,tq2=self.target_q(next_features,next_states,next_actions)
+        with torch.autocast('cuda',dtype=torch.bfloat16):q1,q2=self.q(features,states,actions)
         qloss,target=policy_q_loss(q1.float(),q2.float(),batch['chunk_return'].float(),
             batch['bootstrap_mask'],tq1.float(),tq2.float(),batch['chunk_valid'],self.discount,16)
         actor_context=None
@@ -114,13 +115,12 @@ class PolicyTDSVF(nn.Module):
             return torch.cat(result)
         def teacher_score(endpoints):
             k,b,h,d=endpoints.shape
-            with torch.no_grad():
+            with torch.no_grad(),torch.autocast('cuda',dtype=torch.bfloat16):
                 a=endpoints.reshape(k*b,h,d)*batch['action_mask'].repeat(k,1,1)
-                v1,v2=q_forward_fp32(self.target_q,target_features.repeat(k,1,1),states.repeat(k,1,1),a)
+                v1,v2=self.target_q(target_features.repeat(k,1,1),states.repeat(k,1,1),a)
                 return torch.minimum(v1,v2).float().reshape(k,b)
-        with torch.autocast(device_type=states.device.type, enabled=False):
-            svloss,metrics=joint_losses(self.soft_value,actor_velocity,reference_velocity,teacher_score,
-                target_features,states,actions,batch['action_mask'],self.svf_config)
+        svloss,metrics=joint_losses(self.soft_value,actor_velocity,reference_velocity,teacher_score,
+            target_features,states,actions,batch['action_mask'],self.svf_config)
         metrics.update(q_loss=qloss.detach(),td_abs_error=(q1.float().detach()-target).abs().mean(),
                        terminal_fraction=(1-batch['bootstrap_mask']).float().mean())
         for name,x in [('q1',q1),('q2',q2),('td_target',target)]:

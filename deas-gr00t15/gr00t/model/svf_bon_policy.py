@@ -31,7 +31,6 @@ from types import SimpleNamespace
 
 import numpy as np
 import torch
-from gr00t.model.svf.precision import q_forward_fp32, projection_forward_fp32
 import torch.nn.functional as F
 from safetensors.torch import load_file
 
@@ -93,15 +92,18 @@ class SVFCriticScorer(torch.nn.Module):
         with torch.autocast("cuda", dtype=torch.bfloat16):
             raw = self.backbone(backbone_input, eagle_prefix=prefix)
             features = self.vl_self_attention(self.vlln(raw["backbone_features"]))
-            return features.float().mean(dim=1, keepdim=True)
+            return features.mean(dim=1, keepdim=True).float()
 
     @torch.no_grad()
     def project(self, pooled, embodiment_id):
-        return projection_forward_fp32(self.projection, pooled, embodiment_id)
+        with torch.autocast("cuda", dtype=torch.bfloat16):
+            projected = self.projection(pooled, embodiment_id)
+        return projected.float().tanh()
 
     @torch.no_grad()
     def score(self, embedded, states, actions):
-        q1, q2 = q_forward_fp32(self.q, embedded, states, actions)
+        with torch.autocast("cuda", dtype=torch.bfloat16):
+            q1, q2 = self.q(embedded, states, actions)
         return torch.minimum(q1.float(), q2.float())
 
 
