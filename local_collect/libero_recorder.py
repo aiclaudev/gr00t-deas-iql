@@ -53,13 +53,15 @@ class EpisodeRecorder(gym.Wrapper):
     """Stream one shard per episode into ``shard_dir``."""
 
     def __init__(self, env, shard_dir, task_name: str, env_index: int = 0, fps: int = 20,
-                 min_length: int = 2):
+                 min_length: int = 2, max_episode_steps: int | None = None):
         super().__init__(env)
         self.shard_dir = Path(shard_dir)
         self.task_name = task_name
         self.env_index = env_index
         self.fps = fps
         self.min_length = min_length
+        self.max_episode_steps = max_episode_steps
+        self._observation = None
         self._episode = 0
         self._reset_writers()
 
@@ -71,6 +73,7 @@ class EpisodeRecorder(gym.Wrapper):
         self._rewards = []
         self._dones = []
         self._successes = []
+        self._terminated = []
         self._task_text = None
 
     def _open_shard(self):
@@ -101,8 +104,7 @@ class EpisodeRecorder(gym.Wrapper):
             return
         for writer in self._writers.values():
             writer.close()
-        # The trailing observation has no action after it; drop it so every row
-        # is a complete (observation, action, reward, done) transition.
+        # Only pre-action observations are encoded: one MP4 frame per row.
         frames = min(len(self._states), len(self._actions))
         if frames < self.min_length:
             import shutil
@@ -119,13 +121,14 @@ class EpisodeRecorder(gym.Wrapper):
         reward = np.asarray(self._rewards[:frames], dtype=np.float32)
         done = np.asarray(self._dones[:frames], dtype=bool)
         success = bool(np.any(self._successes[:frames]))
-        done[-1] = True
+        complete = bool(done[-1])
 
         pd.DataFrame({
             "observation.state": list(state),
             "action": list(action),
             "next.reward": reward,
             "next.done": done,
+            "next.terminated": np.asarray(self._terminated[:frames], dtype=bool),
         }).to_parquet(self._shard / "frames.parquet", index=False)
 
         (self._shard / "shard.json").write_text(json.dumps({
@@ -135,6 +138,7 @@ class EpisodeRecorder(gym.Wrapper):
             "episode": self._episode,
             "length": int(frames),
             "success": success,
+            "complete": complete,
             "fps": self.fps,
             "video_keys": [key for key, _ in VIDEO_SOURCES],
         }, indent=2) + "\n")
@@ -145,16 +149,20 @@ class EpisodeRecorder(gym.Wrapper):
     def reset(self, **kwargs):
         self._finalise()
         observation, info = self.env.reset(**kwargs)
-        self._record_frame(observation)
+        self._observation = observation
         return observation, info
 
     def step(self, action):
+        self._record_frame(self._observation)
         self._actions.append(flatten(action, [k for _, keys, _ in ACTION_SOURCES for k in keys]))
         observation, reward, terminated, truncated, info = self.env.step(action)
         self._rewards.append(float(reward))
-        self._dones.append(bool(terminated))
+        success = bool(info.get("success", False))
+        at_limit = self.max_episode_steps is not None and len(self._actions) >= self.max_episode_steps
+        self._dones.append(bool(terminated or truncated or success or at_limit))
+        self._terminated.append(bool(terminated or success))
         self._successes.append(bool(info.get("success", False)))
-        self._record_frame(observation)
+        self._observation = observation
         return observation, reward, terminated, truncated, info
 
     def close(self):

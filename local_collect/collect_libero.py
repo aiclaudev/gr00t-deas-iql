@@ -56,7 +56,8 @@ def make_collecting_env(env_idx: int, *, env_name: str, task_name: str, shard_di
     register_libero_envs()
     env = gym.make(env_name)
     env = EpisodeRecorder(env, shard_dir=shard_dir, task_name=task_name,
-                          env_index=env_idx, fps=fps)
+                          env_index=env_idx, fps=fps,
+                          max_episode_steps=wrapper_configs.multistep.max_episode_steps)
     if wrapper_configs.video.video_dir is not None:
         from gr00t.eval.sim.wrapper.video_recording_wrapper import VideoRecordingWrapper
 
@@ -121,6 +122,7 @@ def collect_task(policy, contract, entry, args, root):
                 success = bool(np.any(final["success"])) if final and "success" in final else False
                 completed += 1
                 successes += success
+                print(f"EPISODE_DONE env={idx} count={completed} success={success}", flush=True)
                 live[idx] = False
                 if completed >= args.n_episodes:
                     break
@@ -218,7 +220,7 @@ def main(argv=None):
 
     print(f"\nShards under {root / 'shards'}")
     print("Assemble with local_collect/libero_shards_to_lerobot.py")
-    return 0
+    return 1 if any(t["status"] != "completed" for t in manifest["tasks"]) else 0
 
 
 if __name__ == "__main__":

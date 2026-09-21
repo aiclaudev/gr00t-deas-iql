@@ -117,6 +117,9 @@ def load_shards(shards_root: Path, group_by: str):
             print(f"[skip] {shard}: no frames.parquet")
             continue
         meta = json.loads(meta_path.read_text())
+        if not meta.get("complete", True):
+            print(f"[skip] {shard}: interrupted partial episode")
+            continue
         # <shards_root>/<suite>/<task>/<shard>
         suite = shard.parent.parent.name
         key = suite if group_by == "suite" else f"{suite}/{meta['task_name']}"
@@ -169,6 +172,8 @@ def assemble(name: str, shards, output_root: Path, *, overwrite, move, gripper_s
             "index": np.arange(global_index, global_index + frames, dtype=np.int64),
             "next.reward": frame_df["next.reward"].to_numpy().astype(np.float32),
             "next.done": frame_df["next.done"].to_numpy().astype(bool),
+            **({"next.terminated": frame_df["next.terminated"].to_numpy().astype(bool)}
+               if "next.terminated" in frame_df else {}),
         }).to_parquet(
             _prepared(dataset_root / DATA_PATH_TEMPLATE.format(
                 episode_chunk=episode_index // DEFAULT_CHUNK_SIZE,
