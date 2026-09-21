@@ -6,8 +6,8 @@ host, in `processor/processor_config.json` under `processor_kwargs.model_name`.
 Loading elsewhere then fails in Qwen3VLProcessor.from_pretrained with
 "Can't load image processor for /home/.../nvidia/Cosmos-Reason2-2B".
 
-This builds a thin directory that symlinks the checkpoint's weights and config
-and carries a corrected copy of `processor/`, so the original download stays
+This builds a thin directory that symlinks the checkpoint's weights and copies
+config.json and `processor/`, so the original download stays
 untouched and nothing large is duplicated. The replacement backbone is taken
 from the checkpoint's own config.json `model_name` when that is already a Hub
 id, which is the usual case.
@@ -62,16 +62,24 @@ def main():
     backbone = resolve_backbone(source, args.backbone)
 
     for entry in sorted(source.iterdir()):
-        if entry.name == PROCESSOR_DIR:
+        if entry.name in (PROCESSOR_DIR, CONFIG_NAME):
             continue
         (output / entry.name).symlink_to(entry.resolve())
+
+    # The model collator also creates a backbone processor. Fix both configs.
+    model_config = json.loads((source / CONFIG_NAME).read_text())
+    previous_model = model_config.get("model_name")
+    if args.backbone or (previous_model and Path(previous_model).is_absolute()
+                         and not Path(previous_model).exists()):
+        model_config["model_name"] = backbone
+    (output / CONFIG_NAME).write_text(json.dumps(model_config, indent=2) + "\n")
 
     shutil.copytree(source / PROCESSOR_DIR, output / PROCESSOR_DIR)
     processor_config = output / PROCESSOR_DIR / "processor_config.json"
     config = json.loads(processor_config.read_text())
-    kwargs = config.get("processor_kwargs", {})
+    kwargs = config.setdefault("processor_kwargs", {})
     previous = kwargs.get("model_name")
-    if previous and Path(previous).is_absolute() and not Path(previous).exists():
+    if args.backbone or (previous and Path(previous).is_absolute() and not Path(previous).exists()):
         kwargs["model_name"] = backbone
         processor_config.write_text(json.dumps(config, indent=2) + "\n")
         print(f"backbone model_name: {previous}\n                  -> {backbone}")
