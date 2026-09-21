@@ -34,7 +34,7 @@ def main():
     from gr00t.data.iql_dataset import EpisodeDataset, eligible_starts
     from gr00t.model.iql.core import chunk_fields
     from gr00t.model.iql.model import ChunkIQLCritic
-    from gr00t.model.transforms import DefaultDataCollator
+    from gr00t.model.transforms import DefaultDataCollator, GR00TRLTransform
 
     torch.set_num_threads(2)
     torch.backends.cuda.matmul.allow_tf32 = True
@@ -69,6 +69,13 @@ def main():
             path = Path(path_string)
             ds = EpisodeDataset(path, metadata, horizon)
             ds.transforms.eval()
+            # The final packer drops dataset actions in inference mode. Retain
+            # action packing without enabling upstream image augmentation or
+            # language dropout. The model itself remains in eval mode.
+            packers = [t for t in ds.transforms.transforms if isinstance(t, GR00TRLTransform)]
+            assert len(packers) == 1
+            packers[0].training = True
+            packers[0].language_dropout_prob = 0.0
             source, task = path.parent.name, path.name
             quotas = {'success': 2} if source == 'demos' else {'success': 3, 'failure': 3}
             counts = {k: 0 for k in quotas}
