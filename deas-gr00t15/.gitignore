@@ -83,6 +83,8 @@ eval_output/
 eval-result/
 hostfile
 core.*
+# Python source is not a core dump.
+!core.py
 *.out
 captioner_bk/
 slurm-logs/

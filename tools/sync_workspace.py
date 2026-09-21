@@ -17,11 +17,17 @@ root = Path(__file__).resolve().parents[1]
 mapping = {'deas-gr00t15': 'DEAS-Isaac-GR00T', 'gr00t17': 'Isaac-GR00T'}
 blocked = {'demo_data', '.github', '.git', '.cache', '.env', 'output', 'outputs', 'wandb', 'checkpoints', '__pycache__', 'node_modules'}
 extensions = {'.py', '.sh', '.md', '.json', '.yaml', '.yml', '.toml', '.cfg', '.ini', '.txt', '.lock', '.ipynb', '.xml', '.html', '.css', '.js', '.ts', '.rst', '.dockerignore', '.gitignore', '.gitattributes'}
+# Fail before copying if an ignore rule hides a source file needed by a runtime import.
+required = {'deas-gr00t15': ['gr00t/model/iql/core.py']}
 names = {'LICENSE', 'NOTICE', 'Dockerfile', 'Makefile', 'uv.lock'}
 provenance = {}
 for target, source in mapping.items():
     src = root.parent / source
     listed = subprocess.check_output(['git', '-C', str(src), 'ls-files', '-z', '--cached', '--others', '--exclude-standard']).decode().split('\0')
+    visible = set(filter(None, listed))
+    for required_path in required.get(target, []):
+        if required_path not in visible or not (src / required_path).is_file():
+            raise SystemExit(f'Missing/ignored required source: {src / required_path}; inspect git check-ignore')
     digest = hashlib.sha256()
     count = 0
     for name in sorted(set(filter(None, listed))):
@@ -31,7 +37,7 @@ for target, source in mapping.items():
         p = src / rel
         if p.is_symlink() or not p.is_file():
             continue
-        if p.suffix not in extensions and p.name not in names:
+        if p.suffix not in extensions and p.name not in extensions and p.name not in names:
             continue
         if p.stat().st_size > 10 * 1024**2:
             continue
