@@ -171,8 +171,12 @@ class SVFCriticScorer(torch.nn.Module):
             return features.mean(dim=1, keepdim=True).float()
 
     @torch.no_grad()
-    def project(self, pooled, embodiment_id):
-        with torch.autocast("cuda", dtype=torch.bfloat16):
+    def project(self, pooled, embodiment_id, dtype=torch.float32):
+        if dtype == torch.float32:
+            from gr00t.model.svf.precision import projection_forward_fp32
+
+            return projection_forward_fp32(self.projection, pooled, embodiment_id)
+        with torch.autocast("cuda", dtype=dtype):
             projected = self.projection(pooled, embodiment_id)
         return projected.float().tanh()
 
@@ -190,9 +194,15 @@ class SVFCriticScorer(torch.nn.Module):
         The weights are unchanged; float32 only stops the comparison from being
         quantised away. Pass dtype=torch.bfloat16 to reproduce the training
         arithmetic bit for bit, which is what verify_svf_q.py does.
+
+        This uses gr00t/model/svf/precision.py. docs/svf_precision.md keeps the
+        trainer on the DEAS bfloat16 baseline, which is a separate question:
+        there Q feeds a loss, here it decides which candidate runs.
         """
         if dtype == torch.float32:
-            q1, q2 = self.q(embedded.float(), states.float(), actions.float())
+            from gr00t.model.svf.precision import q_forward_fp32
+
+            q1, q2 = q_forward_fp32(self.q, embedded, states, actions)
         else:
             with torch.autocast("cuda", dtype=dtype):
                 q1, q2 = self.q(embedded, states, actions)
